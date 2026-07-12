@@ -8,7 +8,7 @@
 
 class DeviceIMUClass {
  public:
-	MPU9250 device;
+	MPU6050 device;
 	void setup(int sda, int scl);
 };
 

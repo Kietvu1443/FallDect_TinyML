@@ -1,4 +1,4 @@
-#define DATA_COLLECTION_MODE 0
+#define DATA_COLLECTION_MODE 1
 #if !DATA_COLLECTION_MODE
 #include <Arduino.h>
 #include <NimBLEDevice.h>
@@ -14,8 +14,8 @@
 #include "tensorflow/lite/schema/schema_generated.h"
 
 #define LOOP_DELAY 50		// milliseconds
-#define GPIO_BUTTON 13	// GPIO pin for button input
-#define GPIO_BUZZER 25	// GPIO pin for buzzer output
+#define GPIO_BUTTON 18	// GPIO pin for button input
+#define GPIO_BUZZER 19	// GPIO pin for buzzer output
 
 #define INFERENCE_WINDOW_SIZE 64
 #define DOG_RADIUS 60
@@ -28,7 +28,7 @@
 #define FALL_CONFIRMATION_COUNTDOWN 300	 // * 50 ms = 15 seconds
 #define FALL_REPORTING_COUNTDOWN 800		 // * 50 ms = 40 seconds
 
-#define LOGGING 0
+#define LOGGING 1
 
 #if LOGGING
 #define LOG(x) Serial.println(x)
@@ -57,7 +57,7 @@ uint8_t tensor_arena[kTensorArenaSize];
 
 void setup() {
 #if LOGGING
-	Serial.begin(9600);
+	Serial.begin(115200);
 	delay(1000);
 	LOG("Hello world");
 #endif
@@ -86,7 +86,7 @@ void setup() {
 	input = interpreter->input(0);
 	output = interpreter->output(0);
 
-	DeviceIMU.setup(27, 26);	// SDA, SCL
+	DeviceIMU.setup(21, 22);	// SDA, SCL
 
 	NimBLEDevice::init("FallDetector");
 	pAdvertising = NimBLEDevice::getAdvertising();

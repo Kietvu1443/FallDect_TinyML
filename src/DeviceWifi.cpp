@@ -7,7 +7,11 @@ void DeviceWifiClass::connect(int verbose) {
 	if (verbose) Serial.print("Connecting to WiFi...");
 
 	WiFi.mode(WIFI_STA);
-	WiFi.begin(ssid, WPA2_AUTH_PEAP, identity, username, password);
+	if (identity != nullptr && strlen(identity) > 0) {
+		WiFi.begin(ssid, WPA2_AUTH_PEAP, identity, username, password);
+	} else {
+		WiFi.begin(ssid, password);
+	}
 }
 
 void DeviceWifiClass::waitForConnect(int verbose) {

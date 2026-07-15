@@ -16,4 +16,8 @@ extern char identity[];
 extern char username[];
 extern char password[];
 
+extern char blynk_auth_token[];
+extern char telegram_bot_token[];
+extern char telegram_chat_id[];
+
 #endif

@@ -1,4 +1,4 @@
-#define DATA_COLLECTION_MODE 1
+#define DATA_COLLECTION_MODE 0
 #if DATA_COLLECTION_MODE
 #include <Arduino.h>
 
@@ -14,7 +14,7 @@
 #define GPIO_BUTTON 18	// GPIO pin for button input
 
 int log_metrics = 0;
-char server_host[] = "10.112.149.6";
+char server_host[] = "192.168.0.182";
 int server_port = 8000;
 
 float data_window[8 * 64 * 8] = {};

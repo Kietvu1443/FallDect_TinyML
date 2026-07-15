@@ -11,10 +11,10 @@
 #include "tensorflow/lite/schema/schema_generated.h"
 
 #define LOOP_DELAY 50		// milliseconds
-#define GPIO_BUTTON 13	// GPIO pin for button input
+#define GPIO_BUTTON 18	// GPIO pin for button input
 
 int log_metrics = 0;
-char server_host[] = "10.112.149.6";
+char server_host[] = "192.168.0.182";
 int server_port = 8000;
 
 float data_window[8 * 64 * 8] = {};
@@ -24,11 +24,11 @@ unsigned long previousMillis = 0;
 WiFiClient client;
 
 void setup() {
-	Serial.begin(9600);
+	Serial.begin(115200);
 	delay(1000);
 	Serial.println("Hello world");
 
-	DeviceIMU.setup(27, 26);	// SDA, SCL
+	DeviceIMU.setup(21, 22);	// SDA, SCL
 
 	DeviceWifi.connect(1);
 	DeviceWifi.waitForConnect(1);

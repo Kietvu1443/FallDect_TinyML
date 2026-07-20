@@ -2,21 +2,20 @@
 // Fall Detection Firmware - Main Logic
 // Architecture:
 //   Core 1 (loop): IMU Sampling (50ms) + DoG Filter + TFLite FSM
-//   Core 0 (networkTask): Wi-Fi/Blynk keep-alive + Telegram alert
+//   Core 0 (networkTask): Wi-Fi/ERa keep-alive + Telegram alert
 //   IPC: FreeRTOS Queue (systemEventQueue)
 // ============================================================
 
 #define DATA_COLLECTION_MODE 0
 #if !DATA_COLLECTION_MODE
 
-// Blynk credentials must be defined before including Blynk header
-#define BLYNK_TEMPLATE_ID "TMPL6ZFDOnM50"
-#define BLYNK_TEMPLATE_NAME "Fall Device"
-#define BLYNK_NO_FANCY_LOGO
+#define DEFAULT_MQTT_HOST "mqtt1.eoh.io"
+#define ERA_AUTH_TOKEN "6b536517-4be6-48c7-87d9-3ade27854876"
+#define ERA_VIRTUAL_WRITE_LEGACY
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <BlynkSimpleEsp32.h>
+#include <ERaSimpleEsp32.hpp>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 
@@ -64,7 +63,7 @@
 #endif
 
 // ============================================================
-// Blynk Virtual Pin Map
+// ERa Virtual Pin Map
 // ============================================================
 #define VPIN_FSM_STATE    V0   // String  – current FSM state name
 #define VPIN_ALERT_STATUS V1   // Integer – 0=OK, 1=FALL DETECTED
@@ -73,6 +72,7 @@
 #define VPIN_RESET        V4   // Button  – remote reset (only active in ALERTING)
 #define VPIN_UPTIME       V5   // Integer – device uptime in seconds
 #define VPIN_CONFIDENCE   V6   // Double  – AI confidence percentage (0-100)
+#define VPIN_ALERT_COUNT  V7   // Integer – total number of confirmed falls
 
 // ============================================================
 // FSM States
@@ -95,8 +95,8 @@ const char* stateNames[] = {
 // IPC: FreeRTOS Queue between Core 1 (FSM) and Core 0 (Network)
 // ============================================================
 enum EventType : uint8_t {
-    EVT_STATE_CHANGE,       // Carry new state for Blynk telemetry
-    EVT_FALL_CONFIRMED,     // Trigger Telegram + Blynk alert (once)
+    EVT_STATE_CHANGE,       // Carry new state for ERa telemetry
+    EVT_FALL_CONFIRMED,     // Trigger Telegram + ERa alert (once)
     EVT_ALERT_CLEARED       // Carry clear status after reset
 };
 
@@ -109,10 +109,11 @@ struct SystemEvent {
 static QueueHandle_t systemEventQueue;
 
 // ============================================================
-// Shared flags (written by Blynk callback on Core 0,
+// Shared flags (written by ERa callback on Core 0,
 // read by FSM on Core 1 – atomic uint8_t is sufficient on ESP32)
 // ============================================================
 static volatile uint8_t remoteResetFlag = 0;
+static int alertCount = 0;
 
 // ============================================================
 // Sensor & Algorithm Buffers
@@ -134,22 +135,22 @@ static TfLiteTensor*             tfl_output     = nullptr;
 static uint8_t tensor_arena[kTensorArenaSize];
 
 // ============================================================
-// Blynk remote-reset callback
+// ERa remote-reset callback
 // Only effective when FSM is in STATE_ALERTING (safety rule)
 // ============================================================
-BLYNK_WRITE(VPIN_RESET) {
-    if (param.asInt() == 1) {
+ERA_WRITE(VPIN_RESET) {
+    if (param.getInt() == 1) {
         remoteResetFlag = 1;
-        LOG("[Blynk] Remote reset requested");
+        LOG("[ERa] Remote reset requested");
     }
 }
 
 // ============================================================
 // Network Task (Core 0)
 // Responsibilities:
-//   1. Non-blocking Wi-Fi & Blynk keep-alive
-//   2. Periodic telemetry to Blynk (every 5 s)
-//   3. Fire-and-forget Telegram + Blynk alert on FALL event
+//   1. Non-blocking Wi-Fi & ERa keep-alive
+//   2. Periodic telemetry to ERa (every 5 s)
+//   3. Fire-and-forget Telegram + ERa alert on FALL event
 // ============================================================
 static void networkTask(void* /*param*/) {
     LOG("[Net] Task started on Core 0");
@@ -158,27 +159,22 @@ static void networkTask(void* /*param*/) {
     DeviceWifi.connect(1);
     DeviceWifi.waitForConnect(1);
 
-    // --- Configure Blynk (non-blocking after Wi-Fi is up) ---
-    Blynk.config(blynk_auth_token);
-    Blynk.connect(3000); // attempt with 3 s timeout
+    // --- Configure ERa ---
+    ERa.begin(ssid, password);
 
     unsigned long lastTelemetry = 0;
 
     for (;;) {
-        // 1. Keep Wi-Fi & Blynk alive
+        // 1. Keep Wi-Fi & ERa alive
         if (WiFi.status() != WL_CONNECTED) {
             LOG("[Net] Wi-Fi lost – reconnecting...");
             DeviceWifi.connect(0);
             DeviceWifi.waitForConnect(0);
         }
-        if (Blynk.connected()) {
-            Blynk.run();
-        } else {
-            Blynk.connect(1000); // short reconnect attempt
-        }
+        ERa.run();
 
         // 2. Periodic telemetry (every 5 s)
-        if (millis() - lastTelemetry >= 5000 && Blynk.connected()) {
+        if (millis() - lastTelemetry >= 5000 && ERa.connected()) {
             lastTelemetry = millis();
             int rssi = WiFi.RSSI();
             int wifi_percentage = 0;
@@ -186,32 +182,35 @@ static void networkTask(void* /*param*/) {
             else if (rssi >= -50) wifi_percentage = 100;
             else wifi_percentage = 2 * (rssi + 100);
 
-            Blynk.virtualWrite(VPIN_RSSI,   wifi_percentage);
-            Blynk.virtualWrite(VPIN_UPTIME, (int)(millis() / 1000));
+            ERa.virtualWrite(VPIN_RSSI,        wifi_percentage);
+            ERa.virtualWrite(VPIN_UPTIME,      (int)(millis() / 1000));
+            ERa.virtualWrite(VPIN_ALERT_COUNT, alertCount);
         }
 
         // 3. Consume events from FSM (non-blocking, 100 ms timeout)
         SystemEvent ev;
         if (xQueueReceive(systemEventQueue, &ev, pdMS_TO_TICKS(100)) == pdTRUE) {
             switch (ev.type) {
-                // --- Update Blynk state label & AI confidence ---
+                // --- Update ERa state label & AI confidence ---
                 case EVT_STATE_CHANGE:
-                    if (Blynk.connected()) {
-                        Blynk.virtualWrite(VPIN_FSM_STATE, stateNames[ev.state]);
-                        Blynk.virtualWrite(VPIN_CONFIDENCE, ev.confidence);
+                    if (ERa.connected()) {
+                        ERa.virtualWrite(VPIN_FSM_STATE, stateNames[ev.state]);
+                        ERa.virtualWrite(VPIN_CONFIDENCE, ev.confidence);
                     }
                     break;
 
-                // --- Send fall alert (Blynk V1 + Telegram, max 3 retries each) ---
+                // --- Send fall alert (ERa V1 + Telegram, max 3 retries each) ---
                 case EVT_FALL_CONFIRMED: {
                     LOG("[Net] FALL event received – sending alerts");
 
-                    // Update Blynk alert status
-                    if (Blynk.connected()) {
-                        Blynk.virtualWrite(VPIN_ALERT_STATUS, 1);
-                        Blynk.virtualWrite(VPIN_FSM_STATE,    "ALERTING");
-                        Blynk.virtualWrite(VPIN_LAST_FALL,    String(millis()));
-                        Blynk.virtualWrite(VPIN_CONFIDENCE,   ev.confidence);
+                    // Increment and update ERa alert count and status
+                    alertCount++;
+                    if (ERa.connected()) {
+                        ERa.virtualWrite(VPIN_ALERT_STATUS, 1);
+                        ERa.virtualWrite(VPIN_FSM_STATE,    "ALERTING");
+                        ERa.virtualWrite(VPIN_LAST_FALL,    String(millis()).c_str());
+                        ERa.virtualWrite(VPIN_CONFIDENCE,   ev.confidence);
+                        ERa.virtualWrite(VPIN_ALERT_COUNT,  alertCount);
                     }
 
                     // Send Telegram HTTPS POST (retry up to 3 times, 2 s apart)
@@ -257,11 +256,11 @@ static void networkTask(void* /*param*/) {
                     break;
                 }
 
-                // --- Clear alert on Blynk Dashboard ---
+                // --- Clear alert on ERa Dashboard ---
                 case EVT_ALERT_CLEARED:
-                    if (Blynk.connected()) {
-                        Blynk.virtualWrite(VPIN_ALERT_STATUS, 0);
-                        Blynk.virtualWrite(VPIN_FSM_STATE,    "MONITORING");
+                    if (ERa.connected()) {
+                        ERa.virtualWrite(VPIN_ALERT_STATUS, 0);
+                        ERa.virtualWrite(VPIN_FSM_STATE,    "MONITORING");
                     }
                     break;
             }
@@ -490,7 +489,7 @@ void loop() {
 
         const float prob = tfl_output->data.f[0];
         LOG("[TFL] P(fall)=" + String(prob, 4) + " took " + String(millis() - t0) + " ms");
-        latest_confidence = prob * 100.0f;
+        latest_confidence = roundf(prob * 10000.0f) / 100.0f;
 
         state = (prob >= 0.5f) ? STATE_COUNTDOWN : STATE_MONITORING;
         break;

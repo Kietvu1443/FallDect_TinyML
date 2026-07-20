@@ -1,33 +1,25 @@
-stateDiagram-v2
-    [*] --> STATE_MONITORING : Setup hoàn tất
-    
-    state STATE_MONITORING {
-        [*] --> Read_IMU
-        Read_IMU --> DoG_Filter
-    }
-    STATE_MONITORING --> STATE_INFERENCE : Thuật toán Naive phát hiện xung động vượt ngưỡng
+@startuml IDC LOL
 
-    state STATE_INFERENCE {
-        [*] --> Run_TFLite_Inference
-    }
-    STATE_INFERENCE --> STATE_MONITORING : AI báo "False Alarm" (Xác suất < 0.5)
-    STATE_INFERENCE --> STATE_COUNTDOWN : AI xác nhận ngã (Xác suất >= 0.5)
+hide empty description
 
-    state STATE_COUNTDOWN {
-        [*] --> Sound_Buzzer_Beep
-        Sound_Buzzer_Beep --> Check_15s
-    }
-    STATE_COUNTDOWN --> STATE_CANCELLED : Nhấn nút hủy (GPIO 18)
-    STATE_COUNTDOWN --> STATE_ALERTING : Hết 15 giây đếm ngược mà không hủy
+state STATE_MONITORING
+state STATE_INFERENCE
+state STATE_COUNTDOWN
+state STATE_ALERTING
+state STATE_CANCELLED
 
-    state STATE_ALERTING {
-        [*] --> Connect_WiFi
-        Connect_WiFi --> Upload_IoT_Cloud
-        Upload_IoT_Cloud --> Sound_Siren
-    }
-    STATE_ALERTING --> STATE_MONITORING : Nhấn giữ nút để Reset / Hết thời gian cảnh báo (40s)
+[*] --> STATE_MONITORING : Setup complete
 
-    state STATE_CANCELLED {
-        [*] --> Sound_Cancel_Melody
-    }
-    STATE_CANCELLED --> STATE_MONITORING : Sau 1 giây
+STATE_MONITORING --> STATE_INFERENCE : Naive detector triggered
+
+STATE_INFERENCE --> STATE_MONITORING : False Alarm
+STATE_INFERENCE --> STATE_COUNTDOWN : Fall detected
+
+STATE_COUNTDOWN --> STATE_CANCELLED : Cancel button
+STATE_COUNTDOWN --> STATE_ALERTING : 15-second timeout
+
+STATE_ALERTING --> STATE_MONITORING : Reset or 40-second timeout
+
+STATE_CANCELLED --> STATE_MONITORING : After 1 second
+
+@enduml

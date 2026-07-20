@@ -1,33 +1,36 @@
-# Fall Detection on ESP32 with TensorFlow Lite and BLE
+# Phát Hiện Té Ngã trên ESP32 với TensorFlow Lite và BLE
 
 ![Fall Detection Poster](images/fall_poster.png)
 
-This project implements a fall detection system using an ESP32 microcontroller equipped with an IMU (Inertial Measurement Unit) sensor. The system collects motion data, and a naive threshold-based algorithm runs in real time to detect potential falls. Once a potential fall is detected, a TensorFlow Lite model is used to classify the event more accurately. If a fall is confirmed, the ESP32 begins a countdown, and if not cancelled, it sends a Bluetooth Low Energy (BLE) advertisement indicating that a fall has occurred.
+Dự án này triển khai một hệ thống phát hiện té ngã sử dụng vi điều khiển ESP32 được trang bị cảm biến IMU (Đơn vị Đo lường Quán tính). Hệ thống thu thập dữ liệu chuyển động và một thuật toán dựa trên ngưỡng cơ bản (naive threshold-based) chạy theo thời gian thực để phát hiện các nguy cơ té ngã. Khi phát hiện một vụ té ngã tiềm ẩn, mô hình TensorFlow Lite sẽ được sử dụng để phân loại sự kiện một cách chính xác hơn. Nếu xác nhận có té ngã, ESP32 bắt đầu đếm ngược, và nếu không bị hủy bỏ, thiết bị sẽ phát tín hiệu quảng bá Bluetooth Low Energy (BLE) thông báo rằng sự cố té ngã đã xảy ra.
 
-## Building ESP32 Firmware
+## Biên Dịch Firmware ESP32
+
 - `cd lib && git clone it@github.com:LiquidCGS/FastIMU.git`
-- Other dependencies listed in `platformio.ini`.
-- Use PlatformIO to build the project and flash it to the ESP32 device.
+- Các thư viện phụ thuộc khác được liệt kê trong `platformio.ini`.
+- Sử dụng PlatformIO để biên dịch dự án và nạp (flash) vào thiết bị ESP32.
 
-## Training the Model
-- Required Python packages in pipfile (use `pipenv`)
+## Huấn Luyện Mô Hình
+
+- Các gói Python cần thiết nằm trong pipfile (sử dụng `pipenv`)
 - `cd python_src && python main.py`
-- Trained model saved as `top_model.keras` in `python_src/models/`
-- Converted TFLite model saved as `model.tflite` in `python_src/models/`
-- Use `xxd -i model.tflite > model.cpp` to convert TFLite model to C++ source file for embedding in firmware.
-- Copy `model.cpp` to `src/` directory of the firmware project.
+- Mô hình đã huấn luyện được lưu dưới dạng `top_model.keras` tại `python_src/models/`
+- Mô hình TFLite sau khi chuyển đổi được lưu dưới dạng `model.tflite` tại `python_src/models/`
+- Sử dụng lệnh `xxd -i model.tflite > model.cpp` để chuyển đổi mô hình TFLite thành file nguồn C++ nhằm nhúng vào firmware.
+- Sao chép `model.cpp` vào thư mục `src/` của dự án firmware.
 
-### Data Collection Server
-`python_src/data_collection_server.py`. Listens for live data streamed over Wifi from the wearable device, and displays real-time plots. Saves received data to CSV file for use in training.
+### Server Thu Thập Dữ Liệu
+
+`python_src/data_collection_server.py`. Lắng nghe dữ liệu phát trực tiếp qua Wifi từ thiết bị đeo và hiển thị đồ thị theo thời gian thực. Lưu dữ liệu nhận được vào file CSV để sử dụng trong quá trình huấn luyện.
 
 <img src="images/data_collection_server.png" width="600" alt="Data Collection Server screenshot"/>
 
-### Data Annotation Helper
-`python_src/annotate_data.py` Designed for manually annotating fall events in synchronized video and sensor data. Also displays custom metrics based on the data which was used to create the naive fall detection algorithm.
+### Công Cụ Gán Nhãn Dữ Liệu (Data Annotation Helper)
 
-<img src="images/data_annotation_helper.png" width="600" alt="Data Annotation Helper screenshot"/>
+`python_src/annotate_data.py`. Được thiết kế để gán nhãn thủ công cho các sự kiện té ngã trong dữ liệu cảm biến và video đã được đồng bộ hóa. Đồng thời hiển thị các chỉ số tùy chỉnh dựa trên dữ liệu vốn được dùng để tạo ra thuật toán phát hiện té ngã cơ bản.
 
-## Other tools
-- To find the optimal parameters for the naive fall detection algorithm, use `python_src/experiments.py`. (Uses bayesian optimization to search parameter space.)
-- Fall detection server: `python_src/fall_detection_server.py`. Listens for Bluetooth Low Energy "Fallen" advertisements from the wearable device, and flashes some very specific LEDs using the GPIO pins on my Raspberry Pi whenever a fall is detected. This could be extended to send push notifications to family members, or alert emergency services.
-- Fall detection ESP32 code: `src/data_collection.cpp`. Periodically sends overlapping windows of IMU data to the data collection server over Wifi. This is unfortunately quite unreliable as packets are often lost. Requires "env.cpp" file with Wifi credentials.
+## Các công cụ khác
+
+- Để tìm các tham số tối ưu cho thuật toán phát hiện té ngã cơ bản, sử dụng `python_src/experiments.py`. (Sử dụng tối ưu hóa Bayesian để tìm kiếm trong không gian tham số.)
+- Server phát hiện té ngã: `python_src/fall_detection_server.py`. Lắng nghe các tín hiệu quảng bá BLE "Fallen" từ thiết bị đeo và nhấp nháy một số đèn LED cụ thể bằng các chân GPIO trên Raspberry Pi bất cứ khi nào phát hiện té ngã. Công cụ này có thể được mở rộng để gửi thông báo đẩy (push notification) tới người thân hoặc cảnh báo cho dịch vụ cấp cứu.
+- Mã nguồn ESP32 thu thập dữ liệu: `src/data_collection.cpp`. Định kỳ gửi các cửa sổ dữ liệu IMU gối lên nhau (overlapping windows) tới server thu thập dữ liệu qua Wifi. Phương thức này khá thiếu ổn định do thường xuyên bị mất gói tin. Yêu cầu có file "env.cpp" chứa thông tin đăng nhập Wifi.

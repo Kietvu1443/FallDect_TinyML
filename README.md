@@ -1,6 +1,6 @@
 # Phát Hiện Té Ngã trên ESP32 với TensorFlow Lite và BLE
 
-![Fall Detection Poster](images/fall_poster.png)
+![Fall Detection Poster](images/fall_posterv2.png)
 
 Dự án này triển khai một hệ thống phát hiện té ngã sử dụng vi điều khiển ESP32 được trang bị cảm biến IMU (Đơn vị Đo lường Quán tính). Hệ thống thu thập dữ liệu chuyển động và một thuật toán dựa trên ngưỡng cơ bản (naive threshold-based) chạy theo thời gian thực để phát hiện các nguy cơ té ngã. Khi phát hiện một vụ té ngã tiềm ẩn, mô hình TensorFlow Lite sẽ được sử dụng để phân loại sự kiện một cách chính xác hơn. Nếu xác nhận có té ngã, ESP32 bắt đầu đếm ngược, và nếu không bị hủy bỏ, thiết bị sẽ phát tín hiệu quảng bá Bluetooth Low Energy (BLE) thông báo rằng sự cố té ngã đã xảy ra.
 

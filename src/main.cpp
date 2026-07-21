@@ -98,7 +98,8 @@ const char* stateNames[] = {
 enum EventType : uint8_t {
     EVT_STATE_CHANGE,       // Carry new state for ERa telemetry
     EVT_FALL_CONFIRMED,     // Trigger Telegram + ERa alert (once)
-    EVT_ALERT_CLEARED       // Carry clear status after reset
+    EVT_ALERT_CLEARED,      // Carry clear status after reset by user
+    EVT_ALERT_TIMEOUT       // Auto-cleared after system timeout
 };
 
 struct SystemEvent {
@@ -277,6 +278,15 @@ static void networkTask(void* /*param*/) {
                         ERa.virtualWrite(VPIN_ALERT_STATUS, 0);
                         ERa.virtualWrite(VPIN_FSM_STATE,    "MONITORING");
                     }
+                    LOG("[Net] Alert cleared by user (Remote Reset)");
+                    break;
+
+                case EVT_ALERT_TIMEOUT:
+                    if (ERa.connected()) {
+                        ERa.virtualWrite(VPIN_ALERT_STATUS, 0);
+                        ERa.virtualWrite(VPIN_FSM_STATE,    "MONITORING");
+                    }
+                    LOG("[Net] Alert cleared by system timeout (40s)");
                     break;
             }
         }
@@ -544,7 +554,6 @@ void loop() {
         // SAFETY RULE: Remote Reset is only accepted in this state
         if (remoteResetFlag) {
             remoteResetFlag = 0;
-            latest_confidence = 0.0f;
             sendEvent(EVT_ALERT_CLEARED);
             state = STATE_MONITORING;
             LOG("[FSM] Remote reset accepted");
@@ -553,8 +562,7 @@ void loop() {
 
         // Auto-reset after 40 s
         if (millis() - state_enter_time >= ALERTING_DURATION_MS) {
-            latest_confidence = 0.0f;
-            sendEvent(EVT_ALERT_CLEARED);
+            sendEvent(EVT_ALERT_TIMEOUT);
             state = STATE_MONITORING;
             LOG("[FSM] Alert timeout – auto reset");
             break;

@@ -14,6 +14,7 @@
 #define ERA_VIRTUAL_WRITE_LEGACY
 
 #include <Arduino.h>
+#include <time.h>
 #include <WiFi.h>
 #include <ERaSimpleEsp32.hpp>
 #include <WiFiClientSecure.h>
@@ -53,14 +54,28 @@
 #define ALERTING_DURATION_MS    40000   // 40 s of siren then auto-reset
 
 // ============================================================
-// Logging
+// Logging & Mutex (Thread-safe resource sharing)
 // ============================================================
 #define LOGGING 1
+static SemaphoreHandle_t logMutex = nullptr;
+
+static void safeLog(const String& msg) {
 #if LOGGING
-#define LOG(x) Serial.println(x)
-#else
-#define LOG(x)
+    if (logMutex != nullptr) {
+        if (xSemaphoreTake(logMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            Serial.println(msg);
+            xSemaphoreGive(logMutex);
+        } else {
+            // Fallback nếu Mutex bị khóa quá lâu
+            Serial.println("[LOG_TIMEOUT] " + msg);
+        }
+    } else {
+        Serial.println(msg);
+    }
 #endif
+}
+
+#define LOG(x) safeLog(x)
 
 // ============================================================
 // ERa Virtual Pin Map
@@ -97,7 +112,8 @@ const char* stateNames[] = {
 enum EventType : uint8_t {
     EVT_STATE_CHANGE,       // Carry new state for ERa telemetry
     EVT_FALL_CONFIRMED,     // Trigger Telegram + ERa alert (once)
-    EVT_ALERT_CLEARED       // Carry clear status after reset
+    EVT_ALERT_CLEARED,      // Carry clear status after reset by user
+    EVT_ALERT_TIMEOUT       // Auto-cleared after system timeout
 };
 
 struct SystemEvent {
@@ -159,6 +175,10 @@ static void networkTask(void* /*param*/) {
     DeviceWifi.connect(1);
     DeviceWifi.waitForConnect(1);
 
+    // --- Configure NTP Time ---
+    configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+    LOG("[Net] NTP configured");
+
     // --- Configure ERa ---
     ERa.begin(ssid, password);
 
@@ -206,11 +226,21 @@ static void networkTask(void* /*param*/) {
                     // Increment and update ERa alert count and status
                     alertCount++;
                     if (ERa.connected()) {
+                        time_t now = time(nullptr);
+                        struct tm timeinfo;
+                        char timeStr[32] = "-";
+                        if (getLocalTime(&timeinfo)) {
+                            strftime(timeStr, sizeof(timeStr), "%H:%M:%S %d/%m/%Y", &timeinfo);
+                        } else {
+                            snprintf(timeStr, sizeof(timeStr), "Uptime %lu s", millis() / 1000);
+                        }
+
                         ERa.virtualWrite(VPIN_ALERT_STATUS, 1);
                         ERa.virtualWrite(VPIN_FSM_STATE,    "ALERTING");
-                        ERa.virtualWrite(VPIN_LAST_FALL,    String(millis()).c_str());
+                        ERa.virtualWrite(VPIN_LAST_FALL,    timeStr);
                         ERa.virtualWrite(VPIN_CONFIDENCE,   ev.confidence);
                         ERa.virtualWrite(VPIN_ALERT_COUNT,  alertCount);
+                        LOG("[Net] Fall time logged to ERa (string): " + String(timeStr));
                     }
 
                     // Send Telegram HTTPS POST (retry up to 3 times, 2 s apart)
@@ -262,6 +292,15 @@ static void networkTask(void* /*param*/) {
                         ERa.virtualWrite(VPIN_ALERT_STATUS, 0);
                         ERa.virtualWrite(VPIN_FSM_STATE,    "MONITORING");
                     }
+                    LOG("[Net] Alert cleared by user (Remote Reset)");
+                    break;
+
+                case EVT_ALERT_TIMEOUT:
+                    if (ERa.connected()) {
+                        ERa.virtualWrite(VPIN_ALERT_STATUS, 0);
+                        ERa.virtualWrite(VPIN_FSM_STATE,    "MONITORING");
+                    }
+                    LOG("[Net] Alert cleared by system timeout (40s)");
                     break;
             }
         }
@@ -283,6 +322,7 @@ void setup() {
 #if LOGGING
     Serial.begin(115200);
     delay(1000);
+    logMutex = xSemaphoreCreateMutex();
     LOG("[SYS] Fall Detector starting...");
     LOG("[SYS] sizeof(SystemEvent) = " + String(sizeof(SystemEvent)) + " bytes");
 #endif
@@ -428,6 +468,22 @@ void loop() {
     static unsigned long state_enter_time  = 0;
     static float        latest_confidence  = 0.0f;
 
+    // ---- Kích hoạt giả lập ngã bằng cách gõ 'f' hoặc 'F' trên Serial Monitor ----
+    if (Serial.available() > 0) {
+        char c = Serial.read();
+        if (c == 'f' || c == 'F') {
+            LOG("[TEST] Kich hoat gia lap nga qua Serial Monitor!");
+            state = STATE_COUNTDOWN;
+            latest_confidence = 99.0f;
+        } else if (c == 'c' || c == 'C') {
+            LOG("[TEST] Huy bao dong/Huy countdown qua Serial Monitor!");
+            sendEvent(EVT_ALERT_CLEARED);
+            state = STATE_MONITORING;
+            latest_confidence = 0.0f;
+            noTone(GPIO_BUZZER);
+        }
+    }
+
     // ---- Broadcast state change to Network Task ----
     if (state != prev_state) {
         sendEvent(EVT_STATE_CHANGE, state, latest_confidence);
@@ -491,6 +547,8 @@ void loop() {
         LOG("[TFL] P(fall)=" + String(prob, 4) + " took " + String(millis() - t0) + " ms");
         latest_confidence = roundf(prob * 10000.0f) / 100.0f;
 
+        // Bỏ comment dòng dưới nếu muốn kéo thanh trượt MPU6050 vượt ngưỡng là trigger ngã luôn (bỏ qua AI)
+        // state = STATE_COUNTDOWN;
         state = (prob >= 0.5f) ? STATE_COUNTDOWN : STATE_MONITORING;
         break;
     }
@@ -526,10 +584,18 @@ void loop() {
 
     // ----------------------------------------------------------
     case STATE_ALERTING: {
+        // Hủy còi báo động trực tiếp bằng cách nhấn nút vật lý
+        if (btn_pressed) {
+            sendEvent(EVT_ALERT_CLEARED);
+            state = STATE_MONITORING;
+            noTone(GPIO_BUZZER);
+            LOG("[FSM] Alert cleared by physical button!");
+            break;
+        }
+
         // SAFETY RULE: Remote Reset is only accepted in this state
         if (remoteResetFlag) {
             remoteResetFlag = 0;
-            latest_confidence = 0.0f;
             sendEvent(EVT_ALERT_CLEARED);
             state = STATE_MONITORING;
             LOG("[FSM] Remote reset accepted");
@@ -538,8 +604,7 @@ void loop() {
 
         // Auto-reset after 40 s
         if (millis() - state_enter_time >= ALERTING_DURATION_MS) {
-            latest_confidence = 0.0f;
-            sendEvent(EVT_ALERT_CLEARED);
+            sendEvent(EVT_ALERT_TIMEOUT);
             state = STATE_MONITORING;
             LOG("[FSM] Alert timeout – auto reset");
             break;

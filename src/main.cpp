@@ -453,6 +453,22 @@ void loop() {
     static unsigned long state_enter_time  = 0;
     static float        latest_confidence  = 0.0f;
 
+    // ---- Kích hoạt giả lập ngã bằng cách gõ 'f' hoặc 'F' trên Serial Monitor ----
+    if (Serial.available() > 0) {
+        char c = Serial.read();
+        if (c == 'f' || c == 'F') {
+            LOG("[TEST] Kich hoat gia lap nga qua Serial Monitor!");
+            state = STATE_COUNTDOWN;
+            latest_confidence = 99.0f;
+        } else if (c == 'c' || c == 'C') {
+            LOG("[TEST] Huy bao dong/Huy countdown qua Serial Monitor!");
+            sendEvent(EVT_ALERT_CLEARED);
+            state = STATE_MONITORING;
+            latest_confidence = 0.0f;
+            noTone(GPIO_BUZZER);
+        }
+    }
+
     // ---- Broadcast state change to Network Task ----
     if (state != prev_state) {
         sendEvent(EVT_STATE_CHANGE, state, latest_confidence);
@@ -516,6 +532,8 @@ void loop() {
         LOG("[TFL] P(fall)=" + String(prob, 4) + " took " + String(millis() - t0) + " ms");
         latest_confidence = roundf(prob * 10000.0f) / 100.0f;
 
+        // Bỏ comment dòng dưới nếu muốn kéo thanh trượt MPU6050 vượt ngưỡng là trigger ngã luôn (bỏ qua AI)
+        // state = STATE_COUNTDOWN;
         state = (prob >= 0.5f) ? STATE_COUNTDOWN : STATE_MONITORING;
         break;
     }
@@ -551,6 +569,15 @@ void loop() {
 
     // ----------------------------------------------------------
     case STATE_ALERTING: {
+        // Hủy còi báo động trực tiếp bằng cách nhấn nút vật lý
+        if (btn_pressed) {
+            sendEvent(EVT_ALERT_CLEARED);
+            state = STATE_MONITORING;
+            noTone(GPIO_BUZZER);
+            LOG("[FSM] Alert cleared by physical button!");
+            break;
+        }
+
         // SAFETY RULE: Remote Reset is only accepted in this state
         if (remoteResetFlag) {
             remoteResetFlag = 0;

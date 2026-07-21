@@ -14,6 +14,7 @@
 #define ERA_VIRTUAL_WRITE_LEGACY
 
 #include <Arduino.h>
+#include <time.h>
 #include <WiFi.h>
 #include <ERaSimpleEsp32.hpp>
 #include <WiFiClientSecure.h>
@@ -159,6 +160,10 @@ static void networkTask(void* /*param*/) {
     DeviceWifi.connect(1);
     DeviceWifi.waitForConnect(1);
 
+    // --- Configure NTP Time ---
+    configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+    LOG("[Net] NTP configured");
+
     // --- Configure ERa ---
     ERa.begin(ssid, password);
 
@@ -206,11 +211,21 @@ static void networkTask(void* /*param*/) {
                     // Increment and update ERa alert count and status
                     alertCount++;
                     if (ERa.connected()) {
+                        time_t now = time(nullptr);
+                        struct tm timeinfo;
+                        char timeStr[32] = "-";
+                        if (getLocalTime(&timeinfo)) {
+                            strftime(timeStr, sizeof(timeStr), "%H:%M:%S %d/%m/%Y", &timeinfo);
+                        } else {
+                            snprintf(timeStr, sizeof(timeStr), "Uptime %lu s", millis() / 1000);
+                        }
+
                         ERa.virtualWrite(VPIN_ALERT_STATUS, 1);
                         ERa.virtualWrite(VPIN_FSM_STATE,    "ALERTING");
-                        ERa.virtualWrite(VPIN_LAST_FALL,    String(millis()).c_str());
+                        ERa.virtualWrite(VPIN_LAST_FALL,    timeStr);
                         ERa.virtualWrite(VPIN_CONFIDENCE,   ev.confidence);
                         ERa.virtualWrite(VPIN_ALERT_COUNT,  alertCount);
+                        LOG("[Net] Fall time logged to ERa (string): " + String(timeStr));
                     }
 
                     // Send Telegram HTTPS POST (retry up to 3 times, 2 s apart)

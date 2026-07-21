@@ -54,14 +54,28 @@
 #define ALERTING_DURATION_MS    40000   // 40 s of siren then auto-reset
 
 // ============================================================
-// Logging
+// Logging & Mutex (Thread-safe resource sharing)
 // ============================================================
 #define LOGGING 1
+static SemaphoreHandle_t logMutex = nullptr;
+
+static void safeLog(const String& msg) {
 #if LOGGING
-#define LOG(x) Serial.println(x)
-#else
-#define LOG(x)
+    if (logMutex != nullptr) {
+        if (xSemaphoreTake(logMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            Serial.println(msg);
+            xSemaphoreGive(logMutex);
+        } else {
+            // Fallback nếu Mutex bị khóa quá lâu
+            Serial.println("[LOG_TIMEOUT] " + msg);
+        }
+    } else {
+        Serial.println(msg);
+    }
 #endif
+}
+
+#define LOG(x) safeLog(x)
 
 // ============================================================
 // ERa Virtual Pin Map
@@ -308,6 +322,7 @@ void setup() {
 #if LOGGING
     Serial.begin(115200);
     delay(1000);
+    logMutex = xSemaphoreCreateMutex();
     LOG("[SYS] Fall Detector starting...");
     LOG("[SYS] sizeof(SystemEvent) = " + String(sizeof(SystemEvent)) + " bytes");
 #endif

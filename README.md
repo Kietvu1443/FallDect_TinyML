@@ -179,6 +179,89 @@ graph LR
     style Core0 fill:#e6f7ff,stroke:#1890ff,stroke-width:2px
 ```
 
+#### Bản phân chia tác vụ đề xuất (FreeRTOS Task Partitioning)
+Để đảm bảo tính thời gian thực nghiêm ngặt cho việc đọc cảm biến và suy diễn AI (Hard Real-time) không bị ảnh hưởng bởi độ trễ mạng (thường từ 0.5s - vài giây khi kết nối Wi-Fi/Cloud), kiến trúc phần mềm đề xuất phân rã hệ thống thành 4 tác vụ FreeRTOS như sau:
+
+| Tác vụ (Task) | Core chạy | Độ ưu tiên (Priority) | Chu kỳ (Period) | Vai trò & Thiết kế kiến trúc |
+| :--- | :---: | :---: | :---: | :--- |
+| **Sensor Task** | **Core 1** | **4** | 50 ms (20Hz) | Đọc dữ liệu thô gia tốc từ cảm biến MPU6050 qua giao tiếp I2C và đẩy vào hàng đệm xoay vòng. Tần số 20Hz ổn định là điều kiện tiên quyết để mô hình AI nhận diện đúng. |
+| **FSM Task** | **Core 1** | **5** | Event / 50ms | Chạy bộ lọc DoG, kiểm tra ngưỡng chấn động, và kích hoạt TensorFlow Lite Micro suy diễn. Có **độ ưu tiên cao nhất** trên Core 1 để đảm bảo việc phân tích cú ngã xảy ra tức thời ngay khi có chấn động. |
+| **Network Task** | **Core 0** | **2** | Thường trực | Nhận sự kiện từ FSM Task, thực hiện kết nối Wi-Fi, đồng bộ trạng thái lên cloud ERa (MQTT) và gửi API POST tới Telegram. Có độ ưu tiên vừa phải để không lấn át các luồng mạng chạy nền của ESP32. |
+| **Logger Task** | **Core 0** | **1** | Chờ sự kiện | Phụ trách in log trạng thái, thông số AI và thông tin gỡ lỗi ra Serial Monitor. Được đặt ở **độ ưu tiên thấp nhất** nhằm tránh làm giảm tài nguyên CPU cho các luồng truyền thông và luồng thuật toán. |
+
+#### Cơ chế truyền thông liên tác vụ (IPC - Inter-Process Communication) & Đồng bộ hóa tài nguyên
+- **Hàng đợi sự kiện (FreeRTOS Queue):** Khai báo hàng đợi `systemEventQueue` để chuyển tiếp cấu trúc `SystemEvent` (chứa trạng thái FSM hiện tại và độ tin cậy AI) từ luồng thuật toán (Core 1) sang luồng mạng (Core 0) dưới dạng bất đồng bộ không chặn (non-blocking).
+- **Cờ hiệu đồng bộ (Volatile Flag):** Biến volatile `remoteResetFlag` được cập nhật bất đồng bộ khi có callback ghi dữ liệu từ ERa Cloud đổ về Core 0, sau đó được Core 1 đọc ở mỗi chu kỳ FSM để thực hiện Reset trạng thái thiết bị một cách an toàn.
+- **Khóa tương hỗ (FreeRTOS Mutex):** Khởi tạo khóa Mutex `logMutex` để bảo vệ cổng truyền thông Serial dùng chung. Khi cả Core 0 (Network) và Core 1 (Algorithm FSM) cùng in log đồng thời, Mutex sẽ đảm bảo các dòng log được in ra trọn vẹn, không bị chồng chéo đè ký tự lên nhau.
+
+### 3.4. Sơ đồ tuần tự (Sequence Diagram)
+Sơ đồ tuần tự dưới đây thể hiện luồng thời gian thực của dữ liệu từ khi cảm biến ghi nhận cú ngã, bộ xử lý FSM và AI xác nhận, đẩy thông báo qua hàng đợi Queue sang luồng mạng, và cơ chế người dùng hoặc người nhà hủy cảnh báo.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Người dùng
+    participant IMU as Cảm biến MPU6050
+    participant Core1 as ESP32 Core 1 FSM
+    participant Queue as Hàng đợi Queue
+    participant Core0 as ESP32 Core 0 Net
+    participant Cloud as Cloud ERa/Telegram
+    actor Caregiver as Người chăm sóc
+
+    Note over User, IMU: Thiết bị ở trạng thái MONITORING
+    IMU ->> Core1: Gửi dữ liệu gia tốc (20Hz)
+    
+    User ->> IMU: Xảy ra va chạm / té ngã
+    IMU ->> Core1: Dữ liệu gia tốc tăng đột ngột
+    Core1 ->> Core1: Lọc thô DoG vượt ngưỡng (0.07)
+    Note over Core1: Chuyển sang trạng thái TRIGGER
+    
+    IMU ->> Core1: Tiếp tục gửi dữ liệu (đủ 64 mẫu)
+    Core1 ->> Core1: Khởi chạy AI TensorFlow Lite Micro
+    Note over Core1: AI xác nhận cú ngã (xác suất >= 0.5)
+    
+    Note over Core1: Chuyển sang trạng thái COUNTDOWN (15s)
+    rect rgb(240, 248, 255)
+        loop Cảnh báo bíp bíp
+            Core1 ->> Core1: Kích hoạt Buzzer kêu ngắt quãng nhanh dần
+        end
+    end
+    
+    alt Trường hợp 1: Người dùng nhấn nút hủy (hoặc gõ 'c')
+        User ->> Core1: Nhấn giữ nút nhấn GPIO 18
+        Core1 ->> Core1: Hủy báo động (STATE_CANCELLED)
+        Core1 ->> Queue: Gửi sự kiện EVT_ALERT_CLEARED
+        Queue ->> Core0: Nhận sự kiện hủy báo động
+        Core0 ->> Cloud: Đồng bộ trạng thái bình thường lên ERa Cloud
+        Core1 ->> Core1: Quay lại trạng thái MONITORING
+    else Trường hợp 2: Hết 15 giây đếm ngược mà không hủy
+        Core1 ->> Core1: Hú còi báo động đỏ (STATE_ALERTING)
+        Core1 ->> Queue: Gửi sự kiện EVT_FALL_CONFIRMED
+        Queue ->> Core0: Nhận sự kiện xác nhận ngã
+        
+        par Truyền thông song song trên Core 0
+            Core0 ->> Cloud: HTTPS POST gửi tin nhắn khẩn tới Telegram Bot
+            Core0 ->> Cloud: MQTT Publish trạng thái báo động lên ERa Cloud
+        end
+        
+        Cloud ->> Caregiver: Gửi tin nhắn Telegram & hiển thị cảnh báo đỏ trên App ERa
+        
+        loop Hú còi liên tục
+            Core1 ->> Core1: Kích hoạt còi báo hú âm điệu siren
+        end
+        
+        opt Người nhà Reset từ xa hoặc người dùng nhấn nút vật lý trực tiếp
+            Caregiver ->> Cloud: Nhấn Remote Reset trên App ERa
+            Cloud ->> Core0: Gửi callback cập nhật V4
+            Core0 ->> Core1: Cập nhật cờ remoteResetFlag = 1
+            Note over Core1: Nhận cờ Reset hoặc Nhấn nút vật lý
+            Core1 ->> Core1: Tắt còi báo động, FSM quay lại MONITORING
+            Core1 ->> Queue: Gửi sự kiện EVT_ALERT_CLEARED
+            Queue ->> Core0: Đồng bộ trạng thái sạch lên ERa Cloud
+        end
+    end
+```
+
 ---
 
 ## 4. Hướng Dẫn Cài Đặt Nhanh (Quickstart)
